@@ -1,0 +1,7 @@
+# Never serve .env or other dotfiles
+RewriteEngine On
+RewriteRule (^|/)\.(?!well-known) - [F,L]
+
+<FilesMatch "^\.">
+    Require all denied
+</FilesMatch>

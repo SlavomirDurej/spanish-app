@@ -1,0 +1,10 @@
+# API keys and the learner's personal details
+.env
+site/.env
+
+# Local ProjectManager manifest (hosting account details)
+.pm/
+
+# Build output and the server's audio cache
+*.zip
+site/spanish/cache/
