@@ -7,12 +7,14 @@ const API = 'api.php';
 const QUIZ_LEN = 10;
 const PASS_SCORE = 70; // speaking score that earns a tick
 
+// Mostly short cheers; only about one in three uses her name, so it stays special.
 const PRAISE = [
-  ['Well done, ' + NAME + '!', 'en'], ['Brilliant work, ' + NAME + '!', 'en'], ['Amazing, ' + NAME + '!', 'en'],
-  ['You\'re a superstar, ' + NAME + '!', 'en'], ['Perfect, ' + NAME + '!', 'en'], ['Wow, ' + NAME + ', that was great!', 'en'],
-  ['¡Fantástico, ' + NAME + '!', 'es'], ['¡Bravo, ' + NAME + '!', 'es'], ['¡Muy bien, ' + NAME + '!', 'es'], ['You\'re on fire, ' + NAME + '!', 'en']
+  ['Great!', 'en'], ['Fantastic!', 'en'], ['Very good!', 'en'], ['Brilliant!', 'en'], ['Perfect!', 'en'], ['Spot on!', 'en'],
+  ['Nice one!', 'en'], ['Amazing!', 'en'], ['¡Muy bien!', 'es'], ['¡Genial!', 'es'], ['¡Bravo!', 'es'], ['¡Fantástico!', 'es'],
+  ['Great work, ' + NAME + '!', 'en'], ['Very good, ' + NAME + '!', 'en'], ['Well done, ' + NAME + '!', 'en'],
+  ['Brilliant work, ' + NAME + '!', 'en'], ['You\'re a superstar, ' + NAME + '!', 'en'], ['¡Muy bien, ' + NAME + '!', 'es']
 ];
-const NEARLY = ['Nearly, ' + NAME + '!', 'So close, ' + NAME + '!', 'Good try, ' + NAME + '!', 'Almost there, ' + NAME + '!'];
+const NEARLY = ['Nearly!', 'So close!', 'Almost there!', 'Not quite!', 'Good try, ' + NAME + '!', 'Keep going, ' + NAME + '!'];
 const LEVELS = ['Principiante', 'Exploradora', 'Estrella', 'Superestrella', 'Campeona', 'Reina del Español'];
 const XP_PER_LEVEL = 120;
 const BADGES = [
@@ -75,7 +77,8 @@ function addXP(n) {
     if (S.streak.n >= 3) award('streak3');
   }
   save();
-  renderTop();
+  floatPoints(n);
+  renderTop(S.xp - n);
   if (level() > before) {
     toast('⬆️ Level up! You are now: ' + levelName());
     confetti(140);
@@ -189,8 +192,13 @@ function browserSpeak(text, lang, excited) {
     speechSynthesis.speak(u);
   });
 }
+let lastPraise = null;
 function praise() {
-  const [text, lang] = rand(PRAISE);
+  // never the same cheer twice in a row, and never two with her name back to back
+  const named = p => p[0].includes(NAME);
+  const pick = rand(PRAISE.filter(p => p !== lastPraise && !(lastPraise && named(lastPraise) && named(p))));
+  lastPraise = pick;
+  const [text, lang] = pick;
   if (S.sound) speak(text, 'praise', lang);
   return text;
 }
@@ -302,7 +310,18 @@ function tickFx() {
   if (parts.length) requestAnimationFrame(tickFx); else fxRunning = false;
 }
 // a little sparkle wherever she taps a button
-document.addEventListener('pointerdown', e => { if (e.target.closest('button')) burst(e.clientX, e.clientY, 7, 4); });
+let lastTap = null;
+document.addEventListener('pointerdown', e => {
+  lastTap = { x: e.clientX, y: e.clientY };
+  if (e.target.closest('button')) burst(e.clientX, e.clientY, 7, 4);
+});
+// "+10" floating up from wherever she just tapped
+function floatPoints(n) {
+  const at = lastTap || { x: innerWidth / 2, y: innerHeight / 2 };
+  const el = h('div', { class: 'pts', style: `left:${at.x}px;top:${at.y}px` }, '+' + n);
+  document.body.append(el);
+  setTimeout(() => el.remove(), 1400);
+}
 
 function toast(msg) {
   const t = h('div', { class: 'toast' }, msg);
@@ -318,10 +337,30 @@ function show(...kids) {
   app.replaceChildren(h('div', { class: 'view' }, ...kids));
   scrollTo(0, 0);
 }
-function renderTop() {
+// Pass the points total from before a win (fromXp) to animate the star, the number and the bar up to the new total.
+function renderTop(fromXp) {
+  const pct = xp => (xp % XP_PER_LEVEL) / XP_PER_LEVEL * 100 + '%';
+  const start = fromXp == null ? S.xp : fromXp, gained = S.xp > start;
+  const star = h('span', { class: 'xpstar' }, '⭐'), num = h('b', { class: 'xpnum' }, String(start)), fill = h('i', { style: 'width:' + pct(start) });
+  if (gained) {
+    const levelUp = Math.floor(S.xp / XP_PER_LEVEL) > Math.floor(start / XP_PER_LEVEL), t0 = performance.now();
+    // wait a moment so the floating "+10" is seen leaving first
+    setTimeout(() => {
+      if (!fill.isConnected) return;
+      star.classList.add('gain'); num.classList.add('gain');
+      fill.style.width = levelUp ? '100%' : pct(S.xp);
+      if (levelUp) setTimeout(() => { fill.style.transition = 'none'; fill.style.width = '0%'; fill.offsetWidth; fill.style.transition = ''; fill.style.width = pct(S.xp); }, 650);
+      const target = S.xp, count = now => {
+        const k = Math.min(1, (now - t0 - 350) / 600);
+        num.textContent = String(Math.round(start + (target - start) * k));
+        if (k < 1 && num.isConnected) requestAnimationFrame(count);
+      };
+      requestAnimationFrame(count);
+    }, 350);
+  }
   $('#top').replaceChildren(
     h('button', { class: 'brand', onclick: home, 'aria-label': 'Home' }, h('span', { class: 'logo' }, '🦩'), h('span', { class: 'name' }, NAME + '\'s Spanish')),
-    h('div', { class: 'pill', title: levelName() }, '⭐ ' + S.xp, h('span', { class: 'xpbar' }, h('i', { style: 'width:' + (S.xp % XP_PER_LEVEL) / XP_PER_LEVEL * 100 + '%' }))),
+    h('div', { class: 'pill', title: levelName() }, star, num, h('span', { class: 'xpbar' }, fill)),
     h('div', { class: 'pill flame', title: 'Day streak' }, '🔥 ' + S.streak.n),
     h('button', { class: 'pill icon', 'aria-label': 'Sound on or off', onclick: () => { S.sound = !S.sound; save(); if (!S.sound) stopSpeaking(); renderTop(); } }, S.sound ? '🔊' : '🔇'),
     h('button', { class: 'pill icon', 'aria-label': 'Settings', onclick: settings }, '⚙️')
@@ -621,7 +660,9 @@ function quiz(c) {
   const next = () => { idx++; idx < qs.length ? render() : results(); };
 
   function feedback(ok, answerText, sayEs) {
-    $('.q')?.classList.add('locked');
+    // lock the question: no second Check, no changing the answer (the listen buttons stay live)
+    const card = $('.q');
+    if (card) { card.classList.add('locked'); card.querySelectorAll('button:not(.round):not(.listenbtn)').forEach(b => { b.disabled = true; }); }
     let title;
     if (ok) {
       right++; combo++;
@@ -676,7 +717,7 @@ function quiz(c) {
       const full = q.s.replace('___', q.a);
       body = [h('h2', {}, 'Fill the gap'),
         h('div', { class: 'bigword' }, h('span', {}, pre, blank, post)),
-        h('p', { class: 'hint' }, '🇬🇧 ' + q.hint),
+        h('p', { class: 'hint' }, q.hint),
         choices(q, ok => { blank.textContent = q.a; feedback(ok, full, full); })];
     } else if (q.t === 'match') {
       let sel = null, left = q.pairs.length, slips = 0;
@@ -714,7 +755,7 @@ function quiz(c) {
         } }, w);
         return t;
       }));
-      body = [h('h2', {}, 'Build the sentence in Spanish'), h('div', { class: 'bigword' }, '🇬🇧 ' + q.en), line, bank, check];
+      body = [h('h2', {}, 'Build the sentence in Spanish'), h('div', { class: 'bigword' }, q.en), line, bank, check];
     }
 
     show(
