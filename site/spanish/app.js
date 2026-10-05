@@ -164,6 +164,19 @@ function stopSpeaking() {
   if (currentAudio) { currentAudio.pause(); currentAudio = null; }
   if ('speechSynthesis' in window) speechSynthesis.cancel();
 }
+// The audio for a phrase in a given voice, fetched once and then kept for the rest of the visit.
+async function speechUrl(text, mode, lang, voice) {
+  const k = voice + '|' + mode + '|' + text;
+  if (!ttsCache.has(k)) {
+    const r = await fetch(API + '?action=tts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text, mode, lang, voice }) });
+    if (!r.ok) throw new Error('tts');
+    ttsCache.set(k, URL.createObjectURL(await r.blob()));
+  }
+  return ttsCache.get(k);
+}
+// For short labels that should sound the instant they are tapped: the fastest voice on offer
+// (Microsoft's), whatever voice is chosen for the lessons.
+const quickVoice = () => (AI.voices.includes('mai') ? 'mai' : voiceId());
 // mode: 'es' Spanish teacher voice, 'praise' excited voice, 'en' friendly English
 async function speak(text, mode = 'es', lang, voice = voiceId()) {
   stopSpeaking();
@@ -171,14 +184,7 @@ async function speak(text, mode = 'es', lang, voice = voiceId()) {
   lang = lang || (mode === 'es' ? 'es' : 'en');
   if (voice !== 'browser') {
     try {
-      const k = voice + '|' + mode + '|' + text;
-      let url = ttsCache.get(k);
-      if (!url) {
-        const r = await fetch(API + '?action=tts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text, mode, lang, voice }) });
-        if (!r.ok) throw new Error('tts');
-        url = URL.createObjectURL(await r.blob());
-        ttsCache.set(k, url);
-      }
+      const url = await speechUrl(text, mode, lang, voice);
       if (my !== speakSeq) return;
       const a = currentAudio = new Audio(url);
       await a.play();
@@ -604,7 +610,7 @@ function avatarBuilder() {
   const draw = () => {
     preview.innerHTML = avatarSVG(a);
     tabsEl.replaceChildren(...AV_TABS.map(([k, es, en]) =>
-      h('button', { class: 'avtab' + (k === tab ? ' on' : ''), onclick: () => { tab = k; draw(); speak(es); } }, h('b', {}, es), h('small', {}, en))));
+      h('button', { class: 'avtab' + (k === tab ? ' on' : ''), onclick: () => { tab = k; draw(); speak(es, 'es', 'es', quickVoice()); } }, h('b', {}, es), h('small', {}, en))));
     const kind = AV_TABS.find(t => t[0] === tab)[3];
     grid.className = 'avgrid ' + kind;
     grid.replaceChildren(...AV[tab].map((opt, i) => {
@@ -616,6 +622,8 @@ function avatarBuilder() {
     }));
   };
   draw();
+  // fetch the nine labels up front so each one plays the moment it is tapped
+  if (quickVoice() !== 'browser') AV_TABS.forEach(t => speechUrl(t[1], 'es', 'es', quickVoice()).catch(() => { }));
   show(
     h('button', { class: 'back', onclick: home }, '← Back'),
     h('div', { class: 'card avb' },
