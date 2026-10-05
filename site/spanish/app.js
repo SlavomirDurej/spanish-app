@@ -114,10 +114,10 @@ const VOICE_CHOICES = [
   ['browser', 'This device\'s voice', 'Built into the tablet or computer · works with no AI']
 ];
 const LISTEN_CHOICES = [
-  ['gemini-flash', 'Gemini Flash', 'Google · listens, scores how clear you sound and gives a tip (about 4 seconds)'],
-  ['gpt-mini', 'GPT-4o mini', 'OpenAI · very quick, checks your words but gives no pronunciation tip'],
-  ['gemini-transcribe', 'Gemini Transcribe', 'Google · careful word-for-word listener, no tip'],
-  ['whisper', 'Whisper Turbo', 'OpenAI · the fastest and cheapest, sometimes mishears English as Spanish'],
+  ['gpt-mini', 'GPT-4o mini', 'OpenAI · answers in under a second, then a pronunciation tip follows'],
+  ['gemini-flash', 'Gemini Flash', 'Google · also scores how clear you sound, but takes about 4 seconds'],
+  ['gemini-transcribe', 'Gemini Transcribe', 'Google · careful word-for-word listener, tip follows'],
+  ['whisper', 'Whisper Turbo', 'OpenAI · the cheapest, sometimes mishears English as Spanish'],
   ['browser', 'This device\'s ears', 'Built into the browser · works with no AI (Chrome only)']
 ];
 // The saved choice if it is still available, otherwise the server's default.
@@ -216,42 +216,66 @@ function similarity(a, b) {
 }
 const toB64 = blob => new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result.split(',')[1]); r.onerror = rej; r.readAsDataURL(blob); });
 
-// Returns { stop(), result: Promise<{score, heard, tip}> }
-async function listenFor(target) {
+const SILENCE_MS = 1300;    // this much quiet after she has spoken means she has finished
+const NO_SPEECH_MS = 5000;  // give up if she never starts
+const MAX_RECORD_MS = 10000;
+
+// Starts listening straight away and stops by itself when she finishes the phrase.
+// Returns { stop(), result: Promise<{score, heard, tip}> }.
+// hooks: onStop() when listening ends, onLevel(0-1) while she speaks, onTip(text) if a better tip arrives later.
+async function listenFor(target, hooks = {}) {
   const listen = listenId();
   if (listen !== 'browser' && navigator.mediaDevices && window.MediaRecorder) {
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
     const rec = new MediaRecorder(stream), chunks = [];
     rec.ondataavailable = e => chunks.push(e.data);
-    // Track the loudest moment, so a silent recording is never sent off to be "scored".
+    const stop = () => { if (rec.state === 'recording') rec.stop(); };
+    // The mic level tells us when she has started and when she has finished, and keeps
+    // a silent recording from ever being sent off to be "scored".
     let peak = 0, meter = null;
     try {
       actx = actx || new (window.AudioContext || window.webkitAudioContext)();
       if (actx.state === 'suspended') actx.resume();
       const an = actx.createAnalyser(), buf = new Uint8Array(an.fftSize = 1024);
       actx.createMediaStreamSource(stream).connect(an);
-      meter = setInterval(() => { an.getByteTimeDomainData(buf); for (const v of buf) peak = Math.max(peak, Math.abs(v - 128) / 128); }, 80);
-    } catch (e) { peak = 1; /* can't measure: let the server decide */ }
+      const t0 = performance.now();
+      let floor = 0, floorN = 0, loudTicks = 0, lastLoud = 0;
+      meter = setInterval(() => {
+        an.getByteTimeDomainData(buf);
+        let lvl = 0;
+        for (const v of buf) lvl = Math.max(lvl, Math.abs(v - 128) / 128);
+        const t = performance.now() - t0;
+        if (t < 150) return;                        // skip the sound of the tap itself
+        peak = Math.max(peak, lvl);
+        if (t < 450) { floor += lvl; floorN++; }    // learn the room's background noise
+        const loud = lvl > Math.min(0.2, Math.max(0.06, (floorN ? floor / floorN : 0) * 2.5));
+        if (loud) { loudTicks++; lastLoud = t; }
+        if (hooks.onLevel) hooks.onLevel(Math.min(1, lvl * 3));
+        const spoke = loudTicks >= 3;
+        if (spoke ? t - lastLoud > SILENCE_MS : t > NO_SPEECH_MS) stop();
+      }, 50);
+    } catch (e) { peak = 1; /* can't measure: she taps to stop, and the server decides */ }
     const result = new Promise((res, rej) => {
       rec.onstop = async () => {
         clearInterval(meter);
         stream.getTracks().forEach(t => t.stop());
+        if (hooks.onStop) hooks.onStop();
         if (peak < 0.04) return res({ score: 0, heard: '', tip: 'I couldn\'t hear you. Hold the device closer and say it nice and loud!' });
         try {
           const blob = new Blob(chunks, { type: rec.mimeType });
-          const r = await fetch(API + '?action=check', {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ audio: await toB64(blob), mime: rec.mimeType, target, listen })
-          });
-          const j = await r.json();
+          const post = (action, body) => fetch(API + '?action=' + action, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(r => r.json());
+          const audio = await toB64(blob);
+          const j = await post('check', { audio, mime: rec.mimeType, target, listen });
           if (!j.ok) throw new Error(j.error);
           res(j);
+          // Quick listeners only check the words; a proper pronunciation tip follows in the background.
+          if (j.more && hooks.onTip) post('tip', { audio, mime: rec.mimeType, target }).then(t => { if (t.ok && t.tip) hooks.onTip(t.tip); }).catch(() => { });
         } catch (e) { rej(e); }
       };
     });
     rec.start();
-    const timer = setTimeout(() => rec.state === 'recording' && rec.stop(), 7000);
-    return { stop() { clearTimeout(timer); if (rec.state === 'recording') rec.stop(); }, result };
+    const timer = setTimeout(stop, MAX_RECORD_MS);
+    return { stop() { clearTimeout(timer); stop(); }, result };
   }
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
   if (!SR) throw new Error('nomic');
@@ -266,7 +290,7 @@ async function listenFor(target) {
       res({ score: best[0], heard: best[1], tip: best[0] >= PASS_SCORE ? 'Lovely Spanish!' : 'Listen again and copy the sounds slowly.' });
     };
     r.onerror = e => { done = true; rej(new Error(e.error)); };
-    r.onend = () => { if (!done) res({ score: 0, heard: '', tip: 'I couldn\'t hear anything — try a bit louder!' }); };
+    r.onend = () => { if (hooks.onStop) hooks.onStop(); if (!done) res({ score: 0, heard: '', tip: 'I couldn\'t hear anything — try a bit louder!' }); };
   });
   r.start();
   return { stop() { r.stop(); }, result };
@@ -572,7 +596,7 @@ function chapter(id, tab = 'learn', cardIdx = 0) {
       h('button', { class: 'btn big', onclick: () => quiz(c) }, s.plays ? 'Play again ✨' : 'Start the quiz ✨'));
   } else {
     body = h('div', {},
-      h('p', { class: 'center', style: 'margin-bottom:14px;color:var(--ink-soft)' }, 'Tap 🔊 to listen, then tap 🎤 and say it out loud!'),
+      h('p', { class: 'center', style: 'margin-bottom:14px;color:var(--ink-soft)' }, 'Tap 🔊 to listen, then tap 🎤 and say it. I\'ll know when you\'ve finished!'),
       c.speak.map((ph, i) => speakCard(c, ph, i)));
   }
 
@@ -589,7 +613,7 @@ function speakCard(c, [es, en], i) {
   const res = h('div', { class: 'res', hidden: '' });
   const showBest = () => { const b = s.speak[i]; best.textContent = b >= PASS_SCORE ? '✅ Best: ' + b + '%' : ''; };
   showBest();
-  let session = null;
+  let session = null, run = 0;
 
   const finish = (score, heard, tip) => {
     const first = !(s.speak[i] >= PASS_SCORE);
@@ -599,27 +623,33 @@ function speakCard(c, [es, en], i) {
       const p = praise();
       sfx('ok'); confetti(score >= 90 ? 90 : 40);
       res.className = 'res good';
-      res.replaceChildren(h('b', {}, '🌟 ' + score + '% — ' + p), h('div', {}, tip || ''));
+      res.replaceChildren(h('b', {}, '🌟 ' + score + '% — ' + p), h('div', { class: 'tipline' }, tip || ''));
       addXP(first ? 15 : 5); checkBadges();
     } else {
       sfx('no');
       res.className = 'res mid';
       res.replaceChildren(h('b', {}, '💪 ' + score + '% — ' + rand(NEARLY)),
-        h('div', {}, (heard ? 'I heard: "' + heard + '". ' : '') + (tip || 'Listen again and have another go!')));
+        h('div', { class: 'tipline' }, (heard ? 'I heard: "' + heard + '". ' : '') + (tip || 'Listen again and have another go!')));
     }
   };
 
+  const idle = () => { mic.className = 'round mic'; mic.textContent = '🎤'; mic.style.removeProperty('--lvl'); };
   const mic = h('button', { class: 'round mic', 'aria-label': 'Record', onclick: async () => {
-    if (session) { session.stop(); return; }
+    if (session) { session.stop(); return; }   // tapping again still stops it by hand
     stopSpeaking();
+    const mine = ++run;
     try {
-      session = await listenFor(es);
-      mic.className = 'round mic rec'; mic.textContent = '⏹';
-      const pending = session.result;
-      const origStop = session.stop;
-      session.stop = () => { mic.className = 'round mic busy'; mic.textContent = '✨'; origStop(); };
-      setTimeout(() => { if (session && mic.classList.contains('rec')) { mic.className = 'round mic busy'; mic.textContent = '✨'; } }, 7000);
-      const r = await pending;
+      session = await listenFor(es, {
+        onLevel: l => mic.style.setProperty('--lvl', l.toFixed(2)),
+        onStop: () => { mic.className = 'round mic busy'; mic.textContent = '✨'; mic.style.removeProperty('--lvl'); },
+        onTip: tip => {
+          const line = res.querySelector('.tipline');
+          if (mine !== run || !line) return;
+          line.textContent = tip; line.classList.add('fresh');
+        }
+      });
+      mic.className = 'round mic rec'; mic.textContent = '👂';
+      const r = await session.result;
       finish(r.score, r.heard, r.tip);
     } catch (e) {
       res.hidden = false; res.className = 'res mid';
@@ -628,7 +658,7 @@ function speakCard(c, [es, en], i) {
         h('div', {}, denied ? 'I need the microphone to hear you. Allow it in the browser, or…' : 'I can\'t listen on this device right now, so…'),
         h('button', { class: 'btn ghost', style: 'margin-top:8px', onclick: () => finish(PASS_SCORE, '', 'Great — saying it out loud is how you learn!') }, 'I said it out loud ✓'));
     }
-    session = null; mic.className = 'round mic'; mic.textContent = '🎤';
+    session = null; idle();
   } }, '🎤');
 
   return h('div', { class: 'card sp' },

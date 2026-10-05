@@ -2,7 +2,8 @@
 // Voice proxy for the Spanish practice app. Keeps the API keys on the server.
 //   GET  ?action=status                          -> { ok, ai, voices, listeners, voice, listen }
 //   POST ?action=tts   {text, mode, lang, voice} -> audio   (mode: es | praise | en)
-//   POST ?action=check {audio, mime, target, listen} -> { ok, heard, score, tip }
+//   POST ?action=check {audio, mime, target, listen} -> { ok, heard, score, tip, more }
+//   POST ?action=tip   {audio, mime, target}         -> { ok, tip }
 
 const GEMINI_URL     = 'https://generativelanguage.googleapis.com/v1beta/interactions';
 const OPENROUTER_URL = 'https://openrouter.ai/api/v1';
@@ -15,7 +16,7 @@ const DEFAULTS       = [
     'VOICE_SPANISH'       => 'Leda',
     'VOICE_PRAISE'        => 'Zephyr',
     'DEFAULT_VOICE'       => 'gemini-lite',
-    'DEFAULT_LISTEN'      => 'gemini-flash',
+    'DEFAULT_LISTEN'      => 'gpt-mini',
     'DAILY_LIMIT'         => '3000', // total AI calls per day, across everyone
 ];
 
@@ -29,10 +30,15 @@ const VOICES = [
     'grok'        => ['via' => 'openrouter', 'model' => 'x-ai/grok-voice-tts-1.0', 'es' => 'Eve', 'en' => 'Eve'],
     'kokoro'      => ['via' => 'openrouter', 'model' => 'hexgrad/kokoro-82m', 'es' => 'ef_dora', 'en' => 'bf_emma'],
 ];
-// Models that listen to the learner. 'lang' is sent as a hint where it helps.
+// Models that listen to the learner. 'lang' is the standard language hint. OpenAI's models only
+// take provider options, and in testing it is the Spanish prompt, not the language code, that
+// keeps them in Spanish (without it, accented Spanish comes back as Welsh, Chinese or whatever
+// the model guesses). The prompt describes the situation only; it never contains the phrase she
+// is meant to say. On silence the model sometimes repeats the prompt back, which is discarded.
 const LISTENERS = [
     'gemini-flash'      => ['via' => 'gemini'],
-    'gpt-mini'          => ['via' => 'openrouter', 'model' => 'openai/gpt-4o-mini-transcribe', 'lang' => 'es'],
+    'gpt-mini'          => ['via' => 'openrouter', 'model' => 'openai/gpt-4o-mini-transcribe', 'lang' => 'es',
+                            'options' => ['openai' => ['language' => 'es', 'prompt' => 'Una alumna principiante practica frases cortas en español.']]],
     'gemini-transcribe' => ['via' => 'openrouter', 'model' => 'google/gemini-3.5-transcribe', 'lang' => 'es'],
     'whisper'           => ['via' => 'openrouter', 'model' => 'openai/whisper-large-v3-turbo'],
 ];
@@ -234,6 +240,7 @@ if ($action === 'check') {
         if (!isset($formats[$mime])) fail(400, 'Unsupported audio type');
         $body = ['model' => $l['model'], 'input_audio' => ['data' => $audio, 'format' => $formats[$mime]]];
         if (isset($l['lang'])) $body['language'] = $l['lang'];
+        if (isset($l['options'])) $body['provider'] = ['options' => $l['options']];
         $res = openrouter('/audio/transcriptions', $body, $err);
         $out = $res ? json_decode($res[0], true) : null;
         if (!is_array($out) || !isset($out['text'])) fail(502, $err ?: 'Could not read the answer');
@@ -272,12 +279,20 @@ if ($action === 'check') {
     }
 
     // How close are her words to the target? (letters only, accents and punctuation ignored)
-    $plain = function ($s) {
+    // Some listeners write "12" where she said "doce", so digits are turned back into words first.
+    $numbers = ['cero', 'uno', 'dos', 'tres', 'cuatro', 'cinco', 'seis', 'siete', 'ocho', 'nueve', 'diez', 'once', 'doce', 'trece', 'catorce',
+        'quince', 'dieciseis', 'diecisiete', 'dieciocho', 'diecinueve', 'veinte', 'veintiuno', 'veintidos', 'veintitres', 'veinticuatro',
+        'veinticinco', 'veintiseis', 'veintisiete', 'veintiocho', 'veintinueve', 'treinta', 'treinta y uno'];
+    $plain = function ($s) use ($numbers) {
+        $s = preg_replace_callback('/\d+/',function ($m) use ($numbers) { return $numbers[(int) $m[0]] ?? $m[0]; }, $s);
         $s = strtr(mb_strtolower($s), ['á' => 'a', 'é' => 'e', 'í' => 'i', 'ó' => 'o', 'ú' => 'u', 'ü' => 'u', 'ñ' => 'n']);
         return trim(preg_replace('/\s+/', ' ', preg_replace('/[^a-z0-9 ]/', ' ', $s)));
     };
     $a = $plain($heard);
     $b = $plain($target);
+    // a listener echoing its own prompt heard nothing
+    $hint = $plain($l['options']['openai']['prompt'] ?? '');
+    if ($hint !== '' && $a !== '' && levenshtein($a, $hint) <= 0.3 * strlen($hint)) { $a = ''; $heard = ''; }
     $match = ($a === '' || $b === '') ? 0 : (int) round(100 * (1 - levenshtein($a, $b) / max(strlen($a), strlen($b))));
 
     if ($a === '') {
@@ -294,7 +309,40 @@ if ($action === 'check') {
     }
 
     header('Content-Type: application/json; charset=utf-8');
-    echo json_encode(['ok' => true, 'heard' => $heard, 'score' => $score, 'tip' => $tip]);
+    // more: a proper pronunciation tip is worth fetching (she said the phrase, and this listener only gave words)
+    $more = $clarity === null && $match >= 60 && cfg('GEMINI_API_KEY') !== '';
+    echo json_encode(['ok' => true, 'heard' => $heard, 'score' => $score, 'tip' => $tip, 'more' => $more]);
+    exit;
+}
+
+// A pronunciation tip for a phrase she has already been scored on. The quick listeners only
+// return words, so the app asks for this in the background and shows it when it arrives.
+if ($action === 'tip') {
+    $audio  = (string) ($in['audio'] ?? '');
+    $mime   = strtolower(trim(explode(';', (string) ($in['mime'] ?? 'audio/webm'))[0]));
+    $target = trim((string) ($in['target'] ?? ''));
+    if ($audio === '' || strlen($audio) > 2500000) fail(400, 'Bad audio');
+    if ($target === '' || mb_strlen($target) > 240) fail(400, 'Bad target');
+    if (!preg_match('#^audio/[a-z0-9.+-]+$#', $mime)) fail(400, 'Bad mime');
+    if ($mime === 'audio/mp4' || $mime === 'audio/x-m4a') $mime = 'audio/m4a';
+    if (cfg('GEMINI_API_KEY') === '') fail(503, 'Tips are not set up yet');
+
+    count_call();
+    $json = gemini([
+        'model' => cfg('GEMINI_LISTEN_MODEL'),
+        'input' => [
+            ['type' => 'text', 'text' => 'A 12-year-old English-speaking beginner is practising saying "' . $target . '" in Spanish. '
+                . 'Listen to her recording and reply with ONLY one short, warm tip in English (16 words at most): '
+                . 'either one specific sound she could improve and how, or specific praise if it already sounds great.'],
+            ['type' => 'audio', 'data' => $audio, 'mime_type' => $mime],
+        ],
+    ], $err);
+    if (!$json) fail(502, $err ?: 'No tip');
+    $tip = trim((string) last_output($json, 'text', 'text'), " \t\n\r\"'");
+    if ($tip === '') fail(502, 'No tip');
+
+    header('Content-Type: application/json; charset=utf-8');
+    echo json_encode(['ok' => true, 'tip' => mb_substr($tip, 0, 200)]);
     exit;
 }
 

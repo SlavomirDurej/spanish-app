@@ -386,3 +386,7 @@ h2.sec { font-size: 1.25rem; margin: 6px 4px 12px; }
 .opt[disabled], .tile[disabled] { color: inherit; cursor: default; }
 .btn[disabled] { color: var(--white); }
 .locked .btn[disabled] { opacity: .45; transition: opacity .3s; }
+
+/* listening: the ring around the mic follows her voice */
+.round.rec { animation: none; box-shadow: 0 0 0 calc(5px + var(--lvl, 0) * 24px) rgba(255, 59, 92, .32), 0 4px 0 #c4203f; transition: box-shadow .09s linear; }
+.tipline.fresh { animation: rise .35s ease both; }
