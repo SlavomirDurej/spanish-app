@@ -4,14 +4,14 @@ A pink, gamified Spanish practice app built for one child, covering the six begi
 "¡Resumen! I can…" page: greetings, describing yourself, family and age, birthdays and the alphabet, pets and
 colours, and writing longer sentences.
 
-![Home screen: avatar, points, Chat with Rosa and the adventure map](docs/screenshot.jpg)
+![Home screen: the adventure map, points, Chat with Rosa and badges](docs/screenshot.jpg)
 
 *Shown with the sample profile; the real learner's details live only in `.env`.*
 
 - **Learn** cards where every Spanish phrase can be tapped to hear it
 - **Play** quizzes: multiple choice, listening, fill-the-gap, match-the-pairs, build-the-sentence
 - **Speak** practice that listens, stops by itself when the learner finishes, and scores what was said
-- **Chat with Rosa**: a live spoken conversation with a flamingo tutor (Gemini Live), in six guided missions
+- **Chat with Rosa**: a live spoken conversation with a tutor called Rosa (Gemini Live), in six guided missions
 - Points, levels, stars, badges, a day streak, an avatar builder and a side-scrolling level map
 - A Settings popup to switch between AI voices and listening models
 

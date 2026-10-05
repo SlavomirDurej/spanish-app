@@ -1,3 +1,7 @@
-<FilesMatch "^(config\.php|config\.example\.php)$">
-    Require all denied
-</FilesMatch>
+# Always check for a new page, so an update shows up on a normal reload.
+# (Scripts and styles carry a ?v= number that changes with each release.)
+<IfModule mod_headers.c>
+    <FilesMatch "\.(html|php)$">
+        Header set Cache-Control "no-cache"
+    </FilesMatch>
+</IfModule>

@@ -24,10 +24,10 @@ const BADGES = [
   { id: 'combo5', e: '🔥', n: '5 in a row' },
   { id: 'bookworm', e: '📖', n: 'Read a whole chapter' },
   { id: 'voice', e: '🎤', n: '5 phrases spoken' },
-  { id: 'rosa', e: '🦩', n: 'Mission with Rosa' },
+  { id: 'rosa', e: '💬', n: 'Mission with Rosa' },
   { id: 'streak3', e: '📅', n: '3-day streak' },
   { id: 'all6', e: '🗺️', n: 'A star in every chapter' },
-  { id: 'queen', e: '👑', n: 'All 18 stars' }
+  { id: 'queen', e: '👑', n: 'Every single star' }
 ];
 
 // ---------- helpers ----------
@@ -61,10 +61,17 @@ function chS(id) { return S.ch[id] || (S.ch[id] = { seen: [], stars: 0, best: 0,
 const level = () => Math.floor(S.xp / XP_PER_LEVEL);
 const levelName = () => LEVELS[Math.min(level(), LEVELS.length - 1)];
 const spokenCount = id => Object.values(chS(id).speak).filter(v => v >= PASS_SCORE).length;
-const totalStars = () => CHAPTERS.reduce((n, c) => n + chS(c.id).stars, 0);
+// Each chapter has three quiz stars, plus a fourth for its chat mission with Rosa (when live chat is switched on).
+const maxStars = () => (AI.chat ? 4 : 3);
+const chatStar = id => (AI.chat && (S.chat || {})[id] ? 1 : 0);
+const chStars = id => chS(id).stars + chatStar(id);
+const totalStars = () => CHAPTERS.reduce((n, c) => n + chStars(c.id), 0);
 function chProgress(c) {
   const s = chS(c.id);
-  return Math.round(100 * (0.3 * s.seen.length / c.learn.length + 0.4 * s.stars / 3 + 0.3 * spokenCount(c.id) / c.speak.length));
+  const parts = [[0.3, s.seen.length / c.learn.length], [0.4, s.stars / 3], [0.3, spokenCount(c.id) / c.speak.length]];
+  if (AI.chat) parts.push([0.35, chatStar(c.id)]);
+  const weight = parts.reduce((n, p) => n + p[0], 0);
+  return Math.round(100 * parts.reduce((n, p) => n + p[0] * p[1], 0) / weight);
 }
 
 function addXP(n) {
@@ -95,7 +102,7 @@ function award(id) {
 }
 function checkBadges() {
   if (CHAPTERS.every(c => chS(c.id).stars > 0)) award('all6');
-  if (totalStars() === CHAPTERS.length * 3) award('queen');
+  if (totalStars() === CHAPTERS.length * maxStars()) award('queen');
   if (CHAPTERS.reduce((n, c) => n + spokenCount(c.id), 0) >= 5) award('voice');
 }
 
@@ -103,8 +110,8 @@ function checkBadges() {
 const AI = { ready: false, chat: false, voices: [], listeners: [], voice: 'browser', listen: 'browser' };
 fetch(API + '?action=status').then(r => r.json()).then(j => {
   Object.assign(AI, { ready: !!j.ai, chat: !!j.chat, voices: j.voices || [], listeners: j.listeners || [], voice: j.voice, listen: j.listen });
-  // the home screen was drawn before we knew whether Rosa is available
-  if (AI.chat && $('.hero') && !$('.chatcard')) home();
+  // the first screen was drawn before we knew whether Rosa is available
+  if (AI.chat) { renderTop(); if ($('.mapwrap')) home(); }
 }).catch(() => { });
 
 // What the Settings popup offers. 'browser' needs no AI at all.
@@ -219,7 +226,6 @@ function similarity(a, b) {
 }
 const toB64 = blob => new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result.split(',')[1]); r.onerror = rej; r.readAsDataURL(blob); });
 
-const SILENCE_MS = 1300;    // this much quiet after she has spoken means she has finished
 const NO_SPEECH_MS = 5000;  // give up if she never starts
 const MAX_RECORD_MS = 10000;
 
@@ -255,7 +261,7 @@ async function listenFor(target, hooks = {}) {
         if (loud) { loudTicks++; lastLoud = t; }
         if (hooks.onLevel) hooks.onLevel(Math.min(1, lvl * 3));
         const spoke = loudTicks >= 3;
-        if (spoke ? t - lastLoud > SILENCE_MS : t > NO_SPEECH_MS) stop();
+        if (spoke ? t - lastLoud > silenceMs() : t > NO_SPEECH_MS) stop();
       }, 50);
     } catch (e) { peak = 1; /* can't measure: she taps to stop, and the server decides */ }
     const result = new Promise((res, rej) => {
@@ -304,11 +310,11 @@ const fx = $('#fx'), fctx = fx.getContext('2d');
 let parts = [], fxRunning = false;
 const FX_COLORS = ['#ff5fa8', '#ff9ccb', '#ffd34e', '#a66bff', '#ffffff', '#ff86b9', '#7be0c3'];
 const FX_SHAPES = ['★', '♥', '✦', '●', '✿'];
-const calm = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+const isCalm = () => window.matchMedia('(prefers-reduced-motion: reduce)').matches || !!(S.settings || {}).calm;
 function sizeFx() { fx.width = innerWidth * devicePixelRatio; fx.height = innerHeight * devicePixelRatio; }
 addEventListener('resize', sizeFx); sizeFx();
 function burst(x, y, n, power = 9) {
-  if (calm) return;
+  if (isCalm()) return;
   for (let i = 0; i < n; i++) {
     const a = Math.random() * Math.PI * 2, v = power * (0.35 + Math.random());
     parts.push({ x, y, vx: Math.cos(a) * v, vy: Math.sin(a) * v - power * 0.4, g: 0.28, life: 1, d: 0.012 + Math.random() * 0.014,
@@ -387,52 +393,118 @@ function renderTop(fromXp) {
       requestAnimationFrame(count);
     }, 350);
   }
+  const hour = new Date().getHours();
+  const hello = hour < 12 ? '¡Buenos días' : hour < 19 ? '¡Buenas tardes' : '¡Buenas noches';
   $('#top').replaceChildren(
-    h('button', { class: 'brand', onclick: home, 'aria-label': 'Home' }, h('span', { class: 'logo' }, '🦩'), h('span', { class: 'name' }, NAME + '\'s Spanish')),
+    h('button', { class: 'brand', onclick: home, 'aria-label': 'Home' }, avEl(S.avatar), h('span', { class: 'name' }, hello + ', ' + NAME + '! 💖')),
     h('div', { class: 'pill', title: levelName() }, star, num, h('span', { class: 'xpbar' }, fill)),
     h('div', { class: 'pill flame', title: 'Day streak' }, '🔥 ' + S.streak.n),
+    AI.chat ? h('button', { class: 'pill chatnav', 'aria-label': 'Chat with Rosa', onclick: chatMenu }, rosaEl('mini'), h('span', {}, 'Chat')) : null,
     h('button', { class: 'pill icon', 'aria-label': 'Sound on or off', onclick: () => { S.sound = !S.sound; save(); if (!S.sound) stopSpeaking(); renderTop(); } }, S.sound ? '🔊' : '🔇'),
-    h('button', { class: 'pill icon', 'aria-label': 'Settings', onclick: settings }, '⚙️')
+    h('button', { class: 'pill icon', 'aria-label': 'Settings', onclick: () => settings() }, '⚙️')
   );
 }
 
-// ---------- settings popup: pick the voice and the listener ----------
-function settings() {
+// ---------- settings: a popup with a side menu ----------
+const PAUSES = [['quick', 'Quick', 900], ['normal', 'Normal', 1300], ['patient', 'Patient', 2000]];
+// how long the Speak games wait in silence before deciding she has finished
+const silenceMs = () => (PAUSES.find(p => p[0] === (S.settings || {}).pause) || PAUSES[1])[2];
+const applyCalm = () => document.body.classList.toggle('calm', isCalm());
+
+function settings(start = 'avatar') {
   if ($('.modal')) return;
   S.settings = S.settings || {};
+  let page = typeof start === 'string' ? start : 'avatar';
   const close = () => { stopSpeaking(); wrap.remove(); document.removeEventListener('keydown', onKey); };
   const onKey = e => { if (e.key === 'Escape') close(); };
+
   const group = (key, choices, available, current, tryIt) => h('div', { class: 'choices', role: 'radiogroup' }, choices.map(([id, name, about]) => {
     const ok = id === 'browser' || available.includes(id);
-    const row = h('div', { class: 'choice' + (current() === id ? ' on' : '') + (ok ? '' : ' off') },
+    return h('div', { class: 'choice' + (current() === id ? ' on' : '') + (ok ? '' : ' off') },
       h('button', { class: 'pick', role: 'radio', 'aria-checked': current() === id ? 'true' : 'false', disabled: ok ? null : '',
         onclick: () => { S.settings[key] = id; save(); sfx('tap'); draw(); } },
         h('span', { class: 'dot' }), h('span', {}, h('b', {}, name), h('small', {}, ok ? about : 'Not set up on the server yet'))),
       ok && tryIt ? h('button', { class: 'try', 'aria-label': 'Hear ' + name, onclick: () => tryIt(id) }, '▶') : null);
-    return row;
   }));
-  const body = h('div', {});
-  const draw = () => body.replaceChildren(
-    h('h3', {}, '🔊 Who speaks?'),
-    h('p', {}, 'Tap ▶ to hear each voice, then pick your favourite.'),
-    group('voice', VOICE_CHOICES, AI.voices, voiceId, async id => {
-      await speak('¡Hola, ' + NAME + '! ¿Qué tal?', 'es', 'es', id);
-      speak('Brilliant work, ' + NAME + '!', 'praise', 'en', id);
-    }),
-    h('h3', {}, '🎤 Who listens?'),
-    h('p', {}, 'This checks what you say in the Speak games.'),
-    group('listen', LISTEN_CHOICES, AI.listeners, listenId, null));
+  const toggle = (name, about, on, set) => h('button', { class: 'toggle' + (on ? ' on' : ''), role: 'switch', 'aria-checked': String(on),
+    onclick: () => { set(!on); save(); draw(); } }, h('span', { class: 'knob' }), h('span', {}, h('b', {}, name), h('small', {}, about)));
+
+  const PAGES = {
+    avatar: ['🎨', 'My avatar', () => [
+      h('p', {}, 'This is you on the map and at the top of the screen.'),
+      h('div', { class: 'avrow' }, avEl(S.avatar), h('button', { class: 'btn', onclick: () => { close(); avatarBuilder(); } }, 'Change my avatar ✏️')),
+      h('p', { class: 'hintline' }, '🔒 Win stars to unlock the cat ears, the crown and the heart sunglasses.')]],
+    voice: ['🔊', 'Speaking', () => [
+      h('p', {}, 'Who reads the Spanish to you? Tap ▶ to hear each voice, then pick your favourite.'),
+      group('voice', VOICE_CHOICES, AI.voices, voiceId, async id => {
+        await speak('¡Hola, ' + NAME + '! ¿Qué tal?', 'es', 'es', id);
+        speak('Brilliant work, ' + NAME + '!', 'praise', 'en', id);
+      }),
+      h('h3', {}, 'Sounds'),
+      toggle('Cheers and sound effects', 'The dings and the "Well done!" voice. Spanish phrases always play when you tap them.', S.sound, v => { S.sound = v; if (!v) stopSpeaking(); renderTop(); })]],
+    listen: ['🎤', 'Listening', () => [
+      h('p', {}, 'Who listens when you speak in the Speak games?'),
+      group('listen', LISTEN_CHOICES, AI.listeners, listenId, null),
+      h('h3', {}, 'How long should I wait?'),
+      h('p', {}, 'After you stop talking, I wait a moment before I check your answer.'),
+      h('div', { class: 'seg', role: 'radiogroup' }, PAUSES.map(([id, name, ms]) => h('button', { class: silenceMs() === ms ? 'on' : '', role: 'radio', 'aria-checked': String(silenceMs() === ms),
+        onclick: () => { S.settings.pause = id; save(); sfx('tap'); draw(); } }, h('b', {}, name), h('small', {}, (ms / 1000) + ' seconds'))))]],
+    look: ['✨', 'Sparkles', () => [
+      h('p', {}, 'Too much going on? You can calm things down.'),
+      toggle('Sparkles, confetti and bouncing', 'Turn off for a calmer screen. The points still count just the same.', !S.settings.calm, v => { S.settings.calm = !v; applyCalm(); })]],
+    data: ['💾', 'My progress', () => {
+      const code = h('textarea', { class: 'codebox', rows: '3', placeholder: 'Paste a progress code here', 'aria-label': 'Progress code' });
+      const msg = h('p', { class: 'hintline' });
+      return [
+        h('div', { class: 'databar' }, h('span', {}, '⭐ ' + S.xp + ' points'), h('span', {}, '🌟 ' + totalStars() + '/' + CHAPTERS.length * maxStars() + ' stars'),
+          h('span', {}, '🔥 ' + S.streak.n + '-day streak'), h('span', {}, '🏅 ' + S.badges.length + '/' + BADGES.length + ' badges')),
+        h('p', {}, 'Your progress is saved on this device only.'),
+        h('h3', {}, 'Move to another device'),
+        h('p', {}, 'Copy your progress code here, then paste it into Settings on the other device.'),
+        h('button', { class: 'btn ghost', onclick: async () => {
+          const text = btoa(unescape(encodeURIComponent(JSON.stringify(S))));
+          try { await navigator.clipboard.writeText(text); msg.textContent = '✅ Copied! Now paste it on the other device.'; } catch (e) { code.value = text; code.select(); msg.textContent = 'Copy the code from the box below.'; }
+        } }, '📋 Copy my progress code'),
+        code,
+        h('button', { class: 'btn ghost', onclick: () => {
+          let data = null;
+          try { data = JSON.parse(decodeURIComponent(escape(atob(code.value.trim())))); } catch (e) { /* not a code */ }
+          if (!data || typeof data.xp !== 'number' || typeof data.ch !== 'object') { msg.textContent = '❌ That doesn\'t look like a progress code.'; return; }
+          if (!confirm('Replace the progress on this device with the pasted one (' + data.xp + ' points)?')) return;
+          localStorage.setItem(KEY, JSON.stringify(data)); location.reload();
+        } }, '📥 Load this code'),
+        msg,
+        h('h3', {}, 'Start over'),
+        h('p', {}, 'Clears all points, stars, badges and your avatar on this device.'),
+        h('button', { class: 'btn danger', onclick: () => { if (confirm('Start again from zero? All stars and points will be cleared.')) { localStorage.removeItem(KEY); location.reload(); } } }, '🗑️ Start over from zero')];
+    }],
+    about: ['👪', 'For grown-ups', () => [
+      h('p', {}, 'A few things worth knowing about how this app works.'),
+      h('ul', { class: 'facts' },
+        h('li', {}, 'Progress, the avatar and these settings are stored only in this browser.'),
+        h('li', {}, 'In the Speak games a short recording is sent to the chosen listening model, which turns it into text. The app compares that text with the phrase.'),
+        AI.chat ? h('li', {}, 'In Chat with Rosa the microphone is streamed live to Google\'s Gemini for the length of the chat. Rosa is told the learner\'s first name, age and the family details used in the lessons, and is instructed to stay on Spanish practice.') : null,
+        AI.chat ? h('li', {}, 'Everything said in a chat is shown on screen as it happens, so you can read along.') : null,
+        h('li', {}, 'Voices and listening models can be changed under Speaking and Listening. "This device\'s voice" and "This device\'s ears" use no outside AI service.'))]]
+  };
+
+  const menu = h('nav', { class: 'setmenu', 'aria-label': 'Settings sections' });
+  const pane = h('div', { class: 'sheet pane' });
+  const draw = () => {
+    menu.replaceChildren(...Object.entries(PAGES).map(([id, [icon, name]]) =>
+      h('button', { class: id === page ? 'on' : '', 'aria-current': id === page ? 'page' : null, onclick: () => { page = id; pane.scrollTop = 0; draw(); } }, h('span', {}, icon), name)));
+    pane.replaceChildren(h('h2', {}, PAGES[page][0] + ' ' + PAGES[page][1]), ...PAGES[page][2]().filter(Boolean));
+  };
   draw();
   const wrap = h('div', { class: 'modal', onclick: e => { if (e.target === wrap) close(); } },
-    h('div', { class: 'sheet', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Settings' },
-      h('div', { class: 'sheethead' }, h('h2', {}, '⚙️ Settings'), h('button', { class: 'x', 'aria-label': 'Close settings', onclick: close }, '✕')),
-      body,
-      h('p', { class: 'hintline' }, 'Your choices are saved on this device.'),
-      h('button', { class: 'btn big', onclick: close }, '¡Listo! ✓')));
+    h('div', { class: 'setbox', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Settings' },
+      h('div', { class: 'sethead' }, h('b', {}, '⚙️ Settings'), h('button', { class: 'x', 'aria-label': 'Close settings', onclick: close }, '✕')),
+      menu, pane));
   document.body.append(wrap);
   document.addEventListener('keydown', onKey);
 }
-const starsEl = n => h('span', { class: 'stars' }, [0, 1, 2].map(i => h('span', { class: i < n ? 'on' : '' }, '★')));
+
+const starsEl = (n, max = 3) => h('span', { class: 'stars' }, Array.from({ length: max }, (_, i) => h('span', { class: i < n ? 'on' : '' }, '★')));
 
 // tappable Spanish phrase
 function item([es, en, emoji, say]) {
@@ -445,27 +517,18 @@ function item([es, en, emoji, say]) {
 
 // ---------- home ----------
 function home() {
-  const hour = new Date().getHours();
-  const hello = hour < 12 ? '¡Buenos días' : hour < 19 ? '¡Buenas tardes' : '¡Buenas noches';
   const next = CHAPTERS.find(c => chProgress(c) < 100) || CHAPTERS[0];
   show(
-    h('section', { class: 'hero' },
-      h('button', { class: 'me', 'aria-label': 'Change your avatar', onclick: avatarBuilder }, avEl(S.avatar), h('span', { class: 'pencil' }, '✏️')),
-      h('div', {},
-        h('h1', {}, hello + ', ' + NAME + '! 💖'),
-        h('p', {}, S.xp ? 'Level ' + (level() + 1) + ' · ' + levelName() + '. Ready for more sparkle?' : 'Welcome to your Spanish adventure! Tap ✏️ to make your avatar.'))),
-    h('div', { class: 'stats' },
-      h('div', { class: 'stat' }, h('b', {}, '⭐ ' + S.xp), h('span', {}, 'sparkle points')),
-      h('div', { class: 'stat' }, h('b', {}, '🔥 ' + S.streak.n), h('span', {}, 'day streak')),
-      h('div', { class: 'stat' }, h('b', {}, '🌟 ' + totalStars() + '/' + CHAPTERS.length * 3), h('span', {}, 'stars'))),
-    h('button', { class: 'btn big', style: 'margin-bottom:22px', onclick: () => chapter(next.id) }, '▶ ' + (S.xp ? 'Keep going' : 'Start') + ': ' + next.title),
-    chatHomeCard(),
     h('h2', { class: 'sec' }, 'Your adventure map — tap any island'),
     levelMap(),
-    h('h2', { class: 'sec', style: 'margin-top:26px' }, 'Your badges'),
-    h('div', { class: 'badges' }, BADGES.map(b => h('div', { class: 'badge' + (S.badges.includes(b.id) ? '' : ' locked') }, h('b', {}, b.e), b.n))),
-    h('p', { class: 'note' }, 'Progress is saved on this device. ',
-      h('button', { onclick: () => { if (confirm('Start again from zero? All stars and points will be cleared.')) { localStorage.removeItem(KEY); location.reload(); } } }, 'Start over'))
+    h('button', { class: 'btn big', style: 'margin:18px 0 0', onclick: () => chapter(next.id) }, '▶ ' + (S.xp ? 'Keep going' : 'Start') + ': ' + next.title),
+    h('div', { class: 'stats' },
+      h('div', { class: 'stat' }, h('b', {}, '⭐ ' + S.xp), h('span', {}, 'sparkle points'), h('span', { class: 'lvl' }, 'Level ' + (level() + 1) + ' · ' + levelName())),
+      h('div', { class: 'stat' }, h('b', {}, '🔥 ' + S.streak.n), h('span', {}, 'day streak')),
+      h('div', { class: 'stat' }, h('b', {}, '🌟 ' + totalStars() + '/' + CHAPTERS.length * maxStars()), h('span', {}, 'stars'))),
+    chatHomeCard(),
+    h('h2', { class: 'sec' }, 'Your badges'),
+    h('div', { class: 'badges' }, BADGES.map(b => h('div', { class: 'badge' + (S.badges.includes(b.id) ? '' : ' locked') }, h('b', {}, b.e), b.n)))
   );
 }
 
@@ -501,13 +564,13 @@ function levelMap() {
     return h('button', {
       class: 'node' + (p === 100 ? ' done' : '') + (i === cur ? ' cur' : ''), style: `left:${pts[i][0]}px;top:${pts[i][1]}px`,
       'aria-label': 'Chapter ' + c.id + ': ' + c.title + ', ' + s.stars + ' of 3 stars',
-      onclick: () => { marker.style.left = pts[i][0] + 'px'; marker.style.top = pts[i][1] + 'px'; marker.classList.add('hop'); setTimeout(() => chapter(c.id), calm ? 0 : 560); }
+      onclick: () => { marker.style.left = pts[i][0] + 'px'; marker.style.top = pts[i][1] + 'px'; marker.classList.add('hop'); setTimeout(() => chapter(c.id), isCalm() ? 0 : 560); }
     },
       h('span', { class: 'bubble' }, c.emoji, p === 100 ? h('i', {}, '👑') : null),
       h('span', { class: 'plat' }),
-      h('span', { class: 'lbl' }, h('b', {}, c.id + ' · ' + c.title), starsEl(s.stars)));
+      h('span', { class: 'lbl' }, h('b', {}, c.id + ' · ' + c.title), starsEl(chStars(c.id), maxStars())));
   });
-  const allDone = totalStars() === CHAPTERS.length * 3;
+  const allDone = totalStars() === CHAPTERS.length * maxStars();
   const world = h('div', { class: 'world', style: `width:${MAP_W}px;height:${MAP_H}px` },
     h('div', { class: 'layer sun' }),
     h('div', { class: 'layer far', html: waveSvg('#e3ccff', 210, 46, 150, 0.6) }),
@@ -518,7 +581,7 @@ function levelMap() {
     MAP_DECOR.map(([x, y, e, size]) => h('span', { class: 'decor', style: `left:${x}px;top:${y}px;font-size:${size}rem` }, e)),
     h('div', { class: 'node goal' + (allDone ? ' done' : ''), style: `left:${GOAL[0]}px;top:${GOAL[1]}px` },
       h('span', { class: 'castle' }, '🏰'), h('span', { class: 'plat' }),
-      h('span', { class: 'lbl' }, h('b', {}, allDone ? '¡Reina del Español! 👑' : '¡La meta!'), h('span', {}, '🌟 ' + totalStars() + ' / ' + CHAPTERS.length * 3))),
+      h('span', { class: 'lbl' }, h('b', {}, allDone ? '¡Reina del Español! 👑' : '¡La meta!'), h('span', {}, '🌟 ' + totalStars() + ' / ' + CHAPTERS.length * maxStars()))),
     nodes, marker);
 
   const map = h('div', { class: 'map' }, world);
@@ -600,17 +663,25 @@ function chapter(id, tab = 'learn', cardIdx = 0) {
       starsEl(s.stars),
       h('p', {}, s.plays ? 'Best score: ' + s.best + '% · played ' + s.plays + (s.plays === 1 ? ' time' : ' times') : QUIZ_LEN + ' quick questions. Every game is different!'),
       h('button', { class: 'btn big', onclick: () => quiz(c) }, s.plays ? 'Play again ✨' : 'Start the quiz ✨'));
+  } else if (tab === 'chat') {
+    const m = CHAT_MISSIONS[c.id - 1], won = (S.chat || {})[m.id];
+    body = h('div', { class: 'card intro center' },
+      rosaEl('big'),
+      h('h2', {}, won ? 'Mission complete! ⭐' : 'Chat with Rosa: ' + m.title),
+      h('p', {}, won ? 'You won this chapter\'s chat star. Come and talk to Rosa again any time!'
+        : 'Rosa asks you about this chapter and you answer out loud. Finish the mission to win the 4th star!'),
+      h('div', { class: 'chips', style: 'justify-content:center;margin-bottom:16px' }, m.hints.map(t => h('span', { class: 'chip' }, t))),
+      h('button', { class: 'btn big', onclick: () => chatRoom(m, () => chapter(id, 'chat')) }, won ? 'Chat again 💬' : 'Start chatting 💬'));
   } else {
     body = h('div', {},
       h('p', { class: 'center', style: 'margin-bottom:14px;color:var(--ink-soft)' }, 'Tap 🔊 to listen, then tap 🎤 and say it. I\'ll know when you\'ve finished!'),
-      c.speak.map((ph, i) => speakCard(c, ph, i)),
-      AI.chat ? h('button', { class: 'btn ghost big', style: 'margin-top:8px', onclick: () => chatRoom(CHAT_MISSIONS[c.id - 1]) }, '🦩 Now try it for real: chat with Rosa') : null);
+      c.speak.map((ph, i) => speakCard(c, ph, i)));
   }
 
   show(
     h('button', { class: 'back', onclick: home }, '← All chapters'),
     h('div', { class: 'chead' }, h('span', { class: 'em' }, c.emoji), h('div', {}, h('h1', {}, c.title), h('p', {}, c.sub))),
-    h('div', { class: 'tabs' }, tabBtn('learn', '📖 Learn'), tabBtn('play', '🎮 Play'), tabBtn('speak', '🎤 Speak')),
+    h('div', { class: 'tabs' }, tabBtn('learn', '📖 Learn'), tabBtn('play', '🎮 Play'), tabBtn('speak', '🎤 Speak'), AI.chat ? tabBtn('chat', '💬 Chat') : null),
     body);
 }
 
@@ -833,5 +904,6 @@ function quiz(c) {
 }
 
 // ---------- go! ----------
+applyCalm();
 renderTop();
 home();

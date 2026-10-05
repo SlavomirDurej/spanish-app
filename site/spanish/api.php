@@ -69,7 +69,7 @@ function rosa_prompt($mission) {
     $months = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
     $month  = $months[max(1, min(12, (int) substr($born, 5, 2))) - 1];
 
-    return "You are Rosa, a cheerful pink flamingo who is the Spanish practice buddy of $name, a $age-year-old girl in England. "
+    return "You are Rosa, a cheerful, friendly young woman from Spain who is the Spanish practice buddy of $name, a $age-year-old girl in England. "
         . "She is a complete beginner in her first term of Spanish at school.\n\n"
         . "HOW TO TALK\n"
         . "- Speak slowly and clearly in very simple Spanish from Spain. Say one short sentence, then ask one short question. Never use more than about twelve words in a turn.\n"
