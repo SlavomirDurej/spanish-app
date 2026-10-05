@@ -24,6 +24,7 @@ const BADGES = [
   { id: 'combo5', e: '🔥', n: '5 in a row' },
   { id: 'bookworm', e: '📖', n: 'Read a whole chapter' },
   { id: 'voice', e: '🎤', n: '5 phrases spoken' },
+  { id: 'rosa', e: '🦩', n: 'Mission with Rosa' },
   { id: 'streak3', e: '📅', n: '3-day streak' },
   { id: 'all6', e: '🗺️', n: 'A star in every chapter' },
   { id: 'queen', e: '👑', n: 'All 18 stars' }
@@ -99,9 +100,11 @@ function checkBadges() {
 }
 
 // ---------- sound: sfx, Gemini voice, browser fallback ----------
-const AI = { ready: false, voices: [], listeners: [], voice: 'browser', listen: 'browser' };
+const AI = { ready: false, chat: false, voices: [], listeners: [], voice: 'browser', listen: 'browser' };
 fetch(API + '?action=status').then(r => r.json()).then(j => {
-  Object.assign(AI, { ready: !!j.ai, voices: j.voices || [], listeners: j.listeners || [], voice: j.voice, listen: j.listen });
+  Object.assign(AI, { ready: !!j.ai, chat: !!j.chat, voices: j.voices || [], listeners: j.listeners || [], voice: j.voice, listen: j.listen });
+  // the home screen was drawn before we knew whether Rosa is available
+  if (AI.chat && $('.hero') && !$('.chatcard')) home();
 }).catch(() => { });
 
 // What the Settings popup offers. 'browser' needs no AI at all.
@@ -355,7 +358,9 @@ function toast(msg) {
 
 // ---------- shared UI bits ----------
 const app = $('#app');
+let leaveHook = null; // a screen that holds something open (the live chat) sets this to tidy up when she leaves
 function show(...kids) {
+  if (leaveHook) { const tidy = leaveHook; leaveHook = null; tidy(); }
   stopSpeaking();
   $('.fb')?.remove();
   app.replaceChildren(h('div', { class: 'view' }, ...kids));
@@ -454,6 +459,7 @@ function home() {
       h('div', { class: 'stat' }, h('b', {}, '🔥 ' + S.streak.n), h('span', {}, 'day streak')),
       h('div', { class: 'stat' }, h('b', {}, '🌟 ' + totalStars() + '/' + CHAPTERS.length * 3), h('span', {}, 'stars'))),
     h('button', { class: 'btn big', style: 'margin-bottom:22px', onclick: () => chapter(next.id) }, '▶ ' + (S.xp ? 'Keep going' : 'Start') + ': ' + next.title),
+    chatHomeCard(),
     h('h2', { class: 'sec' }, 'Your adventure map — tap any island'),
     levelMap(),
     h('h2', { class: 'sec', style: 'margin-top:26px' }, 'Your badges'),
@@ -597,7 +603,8 @@ function chapter(id, tab = 'learn', cardIdx = 0) {
   } else {
     body = h('div', {},
       h('p', { class: 'center', style: 'margin-bottom:14px;color:var(--ink-soft)' }, 'Tap 🔊 to listen, then tap 🎤 and say it. I\'ll know when you\'ve finished!'),
-      c.speak.map((ph, i) => speakCard(c, ph, i)));
+      c.speak.map((ph, i) => speakCard(c, ph, i)),
+      AI.chat ? h('button', { class: 'btn ghost big', style: 'margin-top:8px', onclick: () => chatRoom(CHAT_MISSIONS[c.id - 1]) }, '🦩 Now try it for real: chat with Rosa') : null);
   }
 
   show(
@@ -633,7 +640,7 @@ function speakCard(c, [es, en], i) {
     }
   };
 
-  const idle = () => { mic.className = 'round mic'; mic.textContent = '🎤'; mic.style.removeProperty('--lvl'); };
+  const idle = () => { mic.className = 'round mic'; mic.textContent = '🎤'; mic.style.removeProperty('--lvl'); card.classList.remove('thinking'); };
   const mic = h('button', { class: 'round mic', 'aria-label': 'Record', onclick: async () => {
     if (session) { session.stop(); return; }   // tapping again still stops it by hand
     stopSpeaking();
@@ -641,7 +648,8 @@ function speakCard(c, [es, en], i) {
     try {
       session = await listenFor(es, {
         onLevel: l => mic.style.setProperty('--lvl', l.toFixed(2)),
-        onStop: () => { mic.className = 'round mic busy'; mic.textContent = '✨'; mic.style.removeProperty('--lvl'); },
+        // while the answer is checked: a still hourglass on the button, and the whole card shimmers
+        onStop: () => { mic.className = 'round mic busy'; mic.textContent = '⏳'; mic.style.removeProperty('--lvl'); card.classList.add('thinking'); },
         onTip: tip => {
           const line = res.querySelector('.tipline');
           if (mine !== run || !line) return;
@@ -661,10 +669,11 @@ function speakCard(c, [es, en], i) {
     session = null; idle();
   } }, '🎤');
 
-  return h('div', { class: 'card sp' },
+  const card = h('div', { class: 'card sp' },
     h('div', {}, h('div', { class: 'es' }, es), h('div', { class: 'en' }, en), best),
     h('div', { class: 'acts' }, h('button', { class: 'round', 'aria-label': 'Listen', onclick: () => speak(es) }, '🔊'), mic),
     res);
+  return card;
 }
 
 // ---------- quiz ----------

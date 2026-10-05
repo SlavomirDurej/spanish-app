@@ -6,7 +6,8 @@ colours, and writing longer sentences.
 
 - **Learn** cards where every Spanish phrase can be tapped to hear it
 - **Play** quizzes: multiple choice, listening, fill-the-gap, match-the-pairs, build-the-sentence
-- **Speak** practice that records the learner and scores what was said
+- **Speak** practice that listens, stops by itself when the learner finishes, and scores what was said
+- **Chat with Rosa**: a live spoken conversation with a flamingo tutor (Gemini Live), in six guided missions
 - Points, levels, stars, badges, a day streak, an avatar builder and a side-scrolling level map
 - A Settings popup to switch between AI voices and listening models
 
@@ -20,6 +21,9 @@ it all comes from `.env`, alongside the API keys.
     every chapter; age is worked out from the birthday.
   - `app.js` — screens, quizzes, speaking practice, level map, settings. Progress is saved in the browser's localStorage.
   - `avatar.js` — the avatar drawing (layered SVG) and its options.
+  - `chat.js` + `pcm-worklet.js` — Chat with Rosa. The browser streams the microphone straight to Gemini Live over a
+    WebSocket using a single-use, short-lived token from `api.php`. Rosa's instructions, the missions and the
+    learner's details are built in `api.php` (`rosa_prompt`, `MISSIONS`) and locked into that token.
   - `profile.php` — serves the personal details from `.env` to the page.
   - `api.php` — server-side proxy to OpenRouter and Google Gemini, so the API keys never reach the browser. The
     `VOICES` and `LISTENERS` lists at the top are what the Settings popup can switch between. Generated audio is
@@ -69,5 +73,7 @@ Bump the `?v=` numbers in `site/spanish/index.html` (and upload it too) so brows
 ## Privacy notes
 
 - Voice recordings are sent to the chosen listening model (Google or an OpenRouter provider) to be transcribed.
+- In Chat with Rosa the microphone is streamed live to Google for the length of the chat, and Rosa is told the
+  learner's details from `.env` so she can react naturally. Everything said appears on screen as a transcript.
 - The personal details in `.env` are served to anyone who can open the site, since the lessons display them.
   Keep the site URL private if that matters; the pages ask search engines not to index them.
